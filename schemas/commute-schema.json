@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "com.dejaydev.openclaw.commute",
+  "title": "Commute Result (Routes API)",
+  "description": "Output schema for the commute CLI (Google Routes API, TRAFFIC_AWARE). One JSON object; errors use {status:error,error}. Use --format toon for the token-compact encoding of the same shape.",
+  "type": "object",
+  "required": ["status", "mode", "origin", "destination", "routes", "traffic_status", "timestamp"],
+  "$defs": {
+    "textSeconds": {
+      "type": "object",
+      "required": ["text", "seconds"],
+      "properties": {
+        "text": { "type": "string", "example": "24 mins" },
+        "seconds": { "type": "integer" }
+      }
+    },
+    "distance": {
+      "type": "object",
+      "required": ["text", "meters"],
+      "properties": {
+        "text": { "type": "string", "example": "4.2 mi" },
+        "meters": { "type": "integer" }
+      }
+    },
+    "place": {
+      "type": "object",
+      "required": ["address", "lat", "lng"],
+      "properties": {
+        "address": { "type": "string" },
+        "lat": { "type": "number" },
+        "lng": { "type": "number" }
+      }
+    },
+    "segment": {
+      "type": "object",
+      "description": "A traffic-speed span, indexing into the route polyline points (-segments).",
+      "required": ["speed", "start_index", "end_index"],
+      "properties": {
+        "speed": { "type": "string", "enum": ["normal", "slow", "traffic_jam", "speed_unspecified"] },
+        "start_index": { "type": "integer" },
+        "end_index": { "type": "integer" }
+      }
+    },
+    "leg": {
+      "type": "object",
+      "description": "A segment between the origin, ordered waypoints, and destination.",
+      "properties": {
+        "duration": { "$ref": "#/$defs/textSeconds" },
+        "staticDuration": { "$ref": "#/$defs/textSeconds" },
+        "distance": { "$ref": "#/$defs/distance" },
+        "start": { "$ref": "#/$defs/place" },
+        "end": { "$ref": "#/$defs/place" },
+        "segments": { "type": "array", "items": { "$ref": "#/$defs/segment" } }
+      }
+    }
+  },
+  "properties": {
+    "status": { "type": "string", "enum": ["ok", "error"] },
+    "error": { "type": "string", "description": "Present when status is error (written to stderr, non-zero exit)" },
+    "mode": { "type": "string", "enum": ["driving", "transit", "walking", "bicycling"] },
+    "origin": { "$ref": "#/$defs/place" },
+    "destination": { "$ref": "#/$defs/place" },
+    "depart_at": { "type": "string", "format": "date-time", "description": "When to leave. Present with -arrival (solved) or -departure." },
+    "arrive_at": { "type": "string", "format": "date-time", "description": "Estimated arrival = depart_at + duration. Present with -arrival/-departure." },
+    "routes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["duration", "staticDuration", "distance"],
+        "properties": {
+          "duration": { "$ref": "#/$defs/textSeconds", "description": "Traffic-aware travel time" },
+          "staticDuration": { "$ref": "#/$defs/textSeconds", "description": "Baseline time without traffic" },
+          "distance": { "$ref": "#/$defs/distance" },
+          "description": { "type": "string", "example": "US-101 N" },
+          "legs": { "type": "array", "items": { "$ref": "#/$defs/leg" }, "description": "Present with waypoints or -segments" },
+          "toll": {
+            "type": "object",
+            "description": "Present with -tolls when the route has tolls",
+            "required": ["currency", "amount", "text"],
+            "properties": {
+              "currency": { "type": "string", "example": "USD" },
+              "amount": { "type": "number", "example": 7.5 },
+              "text": { "type": "string", "example": "7.50 USD" }
+            }
+          },
+          "segments": { "type": "array", "items": { "$ref": "#/$defs/segment" }, "description": "Route-level traffic-speed spans (-segments)" },
+          "polyline": { "type": "string", "description": "Encoded polyline the segment indices reference (-segments)" }
+        }
+      }
+    },
+    "traffic_status": {
+      "type": "string",
+      "enum": ["light", "moderate", "heavy", "unknown"],
+      "description": "From duration vs staticDuration: heavy >50% delay, moderate 20-50%, light <20%. unknown when no baseline (e.g. transit)."
+    },
+    "timestamp": { "type": "string", "format": "date-time" }
+  }
+}

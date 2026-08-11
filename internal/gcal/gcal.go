@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	calendar "google.golang.org/api/calendar/v3"
@@ -76,32 +77,63 @@ func eventOut(e *calendar.Event, cal string, raw bool) any {
 	return ToEvent(e, cal)
 }
 
-func (a *App) List(ctx context.Context, calendars []string, from, to, query string, max int64) (any, error) {
+// window resolves the calendars (defaulting to primary), the target timezone,
+// and the parsed [from,to) bounds — the shared preamble of List and FreeBusy.
+func (a *App) window(ctx context.Context, calendars []string, from, to string) ([]string, parsedTime, parsedTime, error) {
 	if len(calendars) == 0 {
 		calendars = []string{PrimaryCalendar}
 	}
 	loc, err := a.location(ctx, calendars[0])
 	if err != nil {
-		return nil, err
+		return nil, parsedTime{}, parsedTime{}, err
 	}
 	now := a.now()
 	tmin, err := parseTime(from, loc, now)
 	if err != nil {
-		return nil, wrapParse("-from", err)
+		return nil, parsedTime{}, parsedTime{}, wrapParse("-from", err)
 	}
 	tmax, err := parseTime(to, loc, now)
 	if err != nil {
-		return nil, wrapParse("-to", err)
+		return nil, parsedTime{}, parsedTime{}, wrapParse("-to", err)
+	}
+	return calendars, tmin, tmax, nil
+}
+
+func (a *App) List(ctx context.Context, calendars []string, from, to, query string, max int64) (any, error) {
+	calendars, tmin, tmax, err := a.window(ctx, calendars, from, to)
+	if err != nil {
+		return nil, err
+	}
+	// Fetch calendars concurrently; the merge+sort below makes per-calendar order irrelevant.
+	perCal := make([][]Event, len(calendars))
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var firstErr error
+	for i, cal := range calendars {
+		wg.Go(func() {
+			raw, err := a.svc.ListEvents(ctx, cal, query, tmin.Time, tmax.Time, max)
+			if err != nil {
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				mu.Unlock()
+				return
+			}
+			evs := make([]Event, len(raw))
+			for j, e := range raw {
+				evs[j] = ToEvent(e, cal)
+			}
+			perCal[i] = evs
+		})
+	}
+	wg.Wait()
+	if firstErr != nil {
+		return nil, firstErr
 	}
 	events := []Event{} // never nil, so an empty result marshals as [] not null
-	for _, cal := range calendars {
-		raw, err := a.svc.ListEvents(ctx, cal, query, tmin.Time, tmax.Time, max)
-		if err != nil {
-			return nil, err
-		}
-		for _, e := range raw {
-			events = append(events, ToEvent(e, cal))
-		}
+	for _, evs := range perCal {
+		events = append(events, evs...)
 	}
 	sort.SliceStable(events, func(i, j int) bool { return startKey(events[i]).Before(startKey(events[j])) })
 	if max > 0 && int64(len(events)) > max {
@@ -124,42 +156,44 @@ func (a *App) Get(ctx context.Context, calendarID, eventID string, raw bool) (an
 	return eventOut(e, cal, raw), nil
 }
 
+type CalendarInfo struct {
+	ID         string `json:"id"`
+	Summary    string `json:"summary"`
+	TimeZone   string `json:"timezone"`
+	AccessRole string `json:"access_role"`
+	Primary    bool   `json:"primary"`
+}
+
 func (a *App) Calendars(ctx context.Context) (any, error) {
 	entries, err := a.svc.ListCalendars(ctx)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]map[string]any, 0, len(entries))
+	out := make([]CalendarInfo, 0, len(entries))
 	for _, c := range entries {
-		out = append(out, map[string]any{
-			"id":          c.Id,
-			"summary":     c.Summary,
-			"timezone":    c.TimeZone,
-			"access_role": c.AccessRole,
-			"primary":     c.Primary,
+		out = append(out, CalendarInfo{
+			ID:         c.Id,
+			Summary:    c.Summary,
+			TimeZone:   c.TimeZone,
+			AccessRole: c.AccessRole,
+			Primary:    c.Primary,
 		})
 	}
 	return map[string]any{"status": "ok", "calendars": out}, nil
 }
 
+// Window is a {start,end} RFC3339 span: a busy block or a free gap.
+type Window struct {
+	Start string `json:"start"`
+	End   string `json:"end"`
+}
+
 type interval struct{ start, end time.Time }
 
 func (a *App) FreeBusy(ctx context.Context, calendars []string, from, to string) (any, error) {
-	if len(calendars) == 0 {
-		calendars = []string{PrimaryCalendar}
-	}
-	loc, err := a.location(ctx, calendars[0])
+	calendars, tmin, tmax, err := a.window(ctx, calendars, from, to)
 	if err != nil {
 		return nil, err
-	}
-	now := a.now()
-	tmin, err := parseTime(from, loc, now)
-	if err != nil {
-		return nil, wrapParse("-from", err)
-	}
-	tmax, err := parseTime(to, loc, now)
-	if err != nil {
-		return nil, wrapParse("-to", err)
 	}
 	resp, err := a.svc.FreeBusy(ctx, calendars, tmin.Time, tmax.Time)
 	if err != nil {
@@ -171,9 +205,9 @@ func (a *App) FreeBusy(ctx context.Context, calendars []string, from, to string)
 	var failed []string
 	for _, cal := range calendars {
 		fb := resp.Calendars[cal]
-		busy := make([]map[string]string, 0, len(fb.Busy))
+		busy := make([]Window, 0, len(fb.Busy))
 		for _, p := range fb.Busy {
-			busy = append(busy, map[string]string{"start": p.Start, "end": p.End})
+			busy = append(busy, Window{Start: p.Start, End: p.End})
 			s, err1 := time.Parse(time.RFC3339, p.Start)
 			e, err2 := time.Parse(time.RFC3339, p.End)
 			if err1 == nil && err2 == nil {
@@ -207,9 +241,9 @@ func (a *App) FreeBusy(ctx context.Context, calendars []string, from, to string)
 }
 
 // freeGaps merges busy intervals and returns the open windows within [from,to).
-func freeGaps(busy []interval, from, to time.Time) []map[string]string {
+func freeGaps(busy []interval, from, to time.Time) []Window {
 	sort.Slice(busy, func(i, j int) bool { return busy[i].start.Before(busy[j].start) })
-	free := []map[string]string{}
+	free := []Window{}
 	cursor := from
 	for _, b := range busy {
 		s, e := b.start, b.end
@@ -236,8 +270,8 @@ func freeGaps(busy []interval, from, to time.Time) []map[string]string {
 	return free
 }
 
-func gap(a, b time.Time) map[string]string {
-	return map[string]string{"start": a.Format(time.RFC3339), "end": b.Format(time.RFC3339)}
+func gap(a, b time.Time) Window {
+	return Window{Start: a.Format(time.RFC3339), End: b.Format(time.RFC3339)}
 }
 
 func wrapParse(flag string, err error) error {

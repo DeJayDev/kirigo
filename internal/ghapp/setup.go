@@ -2,8 +2,6 @@ package ghapp
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -15,6 +13,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/DeJayDev/kirigo/internal/oauthlocal"
 )
 
 type SetupOptions struct {
@@ -68,7 +68,7 @@ func RunSetup(ctx context.Context, client *Client, opts SetupOptions) (Config, e
 		name = "kirigo-agent-git"
 	}
 
-	state, err := randomState()
+	state, err := oauthlocal.RandomState()
 	if err != nil {
 		return Config{}, err
 	}
@@ -130,14 +130,14 @@ func captureManifestCode(ctx context.Context, opts SetupOptions, port int, man m
 		defer server.Close()
 
 		fmt.Fprintf(opts.Err, "Open this in a browser to create the App:\n  http://localhost:%d/\n", port)
-		fmt.Fprintf(opts.Err, "If this machine is remote, forward the port from your laptop first:\n  ssh -L %d:localhost:%d %s\n", port, port, sshTarget())
+		fmt.Fprintf(opts.Err, "If this machine is remote, forward the port from your laptop first:\n  ssh -L %d:localhost:%d %s\n", port, port, oauthlocal.SSHTarget())
 	} else {
 		fmt.Fprintf(opts.Err, "Submit this manifest form in a browser, then paste the redirected URL below.\n")
 		fmt.Fprintf(opts.Err, "Manifest new-app URL: %s\n", newAppURL)
 	}
 	fmt.Fprintf(opts.Err, "Or paste the full redirected URL here and press enter:\n")
 
-	go readPastedCode(opts.In, codeCh, errCh)
+	go oauthlocal.ReadPastedCode(opts.In, codeCh, errCh)
 
 	select {
 	case <-ctx.Done():
@@ -179,43 +179,6 @@ func serveManifestForm(listener net.Listener, formHTML []byte, state string, cod
 		}
 	}()
 	return server
-}
-
-func readPastedCode(in io.Reader, codeCh chan<- string, errCh chan<- error) {
-	buf := make([]byte, 4096)
-	n, err := in.Read(buf)
-	if n > 0 {
-		code, perr := extractCode(strings.TrimSpace(string(buf[:n])))
-		if perr != nil {
-			errCh <- perr
-			return
-		}
-		codeCh <- code
-		return
-	}
-	if err != nil && err != io.EOF {
-		errCh <- err
-	}
-}
-
-// extractCode accepts either a bare code or a full redirected URL and returns
-// the manifest code.
-func extractCode(input string) (string, error) {
-	if input == "" {
-		return "", fmt.Errorf("empty input")
-	}
-	if !strings.Contains(input, "://") {
-		return input, nil
-	}
-	parsed, err := url.Parse(input)
-	if err != nil {
-		return "", fmt.Errorf("parse pasted URL: %w", err)
-	}
-	code := parsed.Query().Get("code")
-	if code == "" {
-		return "", fmt.Errorf("pasted URL has no code parameter")
-	}
-	return code, nil
 }
 
 func manifestNewAppURL(org, state string) string {
@@ -301,24 +264,4 @@ func configureGitHelper(scope string) error {
 		return fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
 	return nil
-}
-
-func sshTarget() string {
-	user := os.Getenv("USER")
-	if user == "" {
-		user = "<user>"
-	}
-	host, err := os.Hostname()
-	if err != nil || host == "" {
-		host = "<this-host>"
-	}
-	return user + "@" + host
-}
-
-func randomState() (string, error) {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(b), nil
 }

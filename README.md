@@ -15,8 +15,6 @@ Small, single-purpose Go binaries for agent and script workflows. Each tool live
 - [gh-app-token](cmd/gh-app-token/README.md) — scoped, short-lived GitHub App installation tokens. It also works as a git credential helper.
 - [gcal](cmd/gcal/README.md) — full Google Calendar event CRUD, with restorable, snapshotted mutations.
 
-Output schemas for the JSON binaries live in [`schemas/`](schemas/).
-
 ## Build
 
 ```bash

@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `make deploy` — build and install binaries to `~/.local/bin` (override with `PREFIX=` or `BINDIR=`).
 - `make test` — `go test ./...`
 - Single test: `go test ./internal/commute -run TestName`
-- Run a binary directly: `go run ./cmd/commute -origin "..." -destination "..."`
+- Run a binary directly: `go run ./cmd/commute --origin "..." --destination "..."`
 
 ## Architecture
 
@@ -21,7 +21,7 @@ A monorepo of small Go CLI binaries. Each binary lives under `cmd/<name>` and is
 - `internal/googlemaps` — thin transport for the Google Routes REST endpoint (`v2:computeRoutes`, `TRAFFIC_AWARE`): marshals the official `routingpb` types with `protojson`, `RoutesFieldMask` builds the `X-Goog-FieldMask`, `NewClientWithHTTP` injects a test server.
 - `internal/googlecal` — gcal's Calendar client, built on the official `google.golang.org/api/calendar/v3` discovery client.
 - `internal/configenv` — loads env from the first existing file among `~/.config/kirigo/{.env,env,kirigo.env}`, or `$KIRIGO_ENV_FILE`. Missing files are not errors.
-- `internal/output` — the output writer: JSON (default) or TOON (`-format toon`, `KIRIGO_FORMAT`, or agent-context autodetect). Wraps `internal/jsonout` (raw 2-space JSON) and `toon-go`. Route all machine-readable output through `output`.
+- `internal/output` — the output writer: JSON (default, raw 2-space) or TOON (`-format toon`, `KIRIGO_FORMAT`, or agent-context autodetect, via `toon-go`). Route all machine-readable output through `output`.
 
 ### Conventions
 
@@ -31,4 +31,3 @@ A monorepo of small Go CLI binaries. Each binary lives under `cmd/<name>` and is
   - The invariant across the repo: **types are always Google's; transport is whatever keeps the binary lean.** Follow the same rule when adding a new Google-API tool.
 - Binaries emit JSON (or TOON) only, for agent/script consumption — both results and errors. Route new output through `internal/output`.
 - Keep `main` thin: validation and logic belong in an `internal/` package unit-tested with injected dependencies (client interface, clock, HTTP endpoint).
-- `schemas/` holds JSON schemas describing binary output (e.g. `commute-schema.json`, `gcal-schema.json`); TOON carries the same shape.

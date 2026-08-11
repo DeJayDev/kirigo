@@ -2,134 +2,126 @@ package main
 
 import (
 	"context"
-	"flag"
+	"errors"
 	"fmt"
 	"os"
 	"time"
+
+	"github.com/alecthomas/kong"
 
 	"github.com/DeJayDev/kirigo/internal/configenv"
 	"github.com/DeJayDev/kirigo/internal/ghapp"
 )
 
-func main() {
-	os.Exit(run(os.Args[1:]))
+type CLI struct {
+	Token         TokenCmd         `cmd:"" default:"1" help:"print an installation token (default)"`
+	GitCredential GitCredentialCmd `cmd:"" name:"git-credential" help:"act as a git credential helper"`
+	Setup         SetupCmd         `cmd:"" help:"create the GitHub App and store its credentials"`
 }
+
+func main() { os.Exit(run(os.Args[1:])) }
 
 func run(args []string) int {
 	if err := configenv.LoadDefault(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-
-	command := "token"
-	if len(args) > 0 {
-		command = args[0]
-		args = args[1:]
-	}
-
-	switch command {
-	case "token":
-		return runToken()
-	case "git-credential":
-		return runGitCredential(args)
-	case "setup":
-		return runSetup(args)
-	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q; want token, git-credential, or setup\n", command)
-		return 2
-	}
-}
-
-func runToken() int {
-	cfg, err := ghapp.LoadConfig()
+	var cli CLI
+	parser, err := kong.New(&cli, kong.Name("gh-app-token"),
+		kong.Description("Scoped, short-lived GitHub App installation tokens; also a git credential helper."))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	if err := cfg.Validate(); err != nil {
+	kctx, err := parser.Parse(args)
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
+	}
+	if err := kctx.Run(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		if _, ok := errors.AsType[configErr](err); ok {
+			return 2
+		}
+		return 1
+	}
+	return 0
+}
+
+// configErr marks a config/validation failure so it exits 2 (vs 1 for runtime).
+type configErr struct{ error }
+
+type TokenCmd struct{}
+
+func (c *TokenCmd) Run() error {
+	cfg, err := ghapp.LoadConfig()
+	if err != nil {
+		return configErr{err}
+	}
+	if err := cfg.Validate(); err != nil {
+		return configErr{err}
 	}
 	token, err := fetchToken(cfg)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
+		return err
 	}
 	fmt.Fprintln(os.Stdout, token)
-	return 0
+	return nil
 }
 
-func runGitCredential(args []string) int {
-	operation := ""
-	if len(args) > 0 {
-		operation = args[0]
-	}
+type GitCredentialCmd struct {
+	Operation string `arg:"" optional:"" help:"git credential operation (get/store/erase)"`
+}
+
+func (c *GitCredentialCmd) Run() error {
 	// git only wants a credential on "get"; store/erase are no-ops we accept for
 	// protocol compatibility.
-	if operation != "get" {
-		return 0
+	if c.Operation != "get" {
+		return nil
 	}
-
 	request, err := ghapp.ParseCredentialRequest(os.Stdin)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
+		return err
 	}
 	if request["host"] != "github.com" {
-		return 0
+		return nil
 	}
-
 	cfg, err := ghapp.LoadConfig()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 2
+		return configErr{err}
 	}
 	if err := cfg.Validate(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 2
+		return configErr{err}
 	}
 	token, err := fetchToken(cfg)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
+		return err
 	}
-	if err := ghapp.WriteCredentialGet(os.Stdout, request, token); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-	return 0
+	return ghapp.WriteCredentialGet(os.Stdout, request, token)
 }
 
-func runSetup(args []string) int {
-	flags := flag.NewFlagSet("setup", flag.ContinueOnError)
-	org := flags.String("org", "", "GitHub org to create the App under (default: personal account)")
-	name := flags.String("name", "", "App name (default kirigo-agent-git)")
-	port := flags.Int("port", 0, "localhost callback port (default 8765)")
-	paste := flags.Bool("paste", false, "skip the local server; paste the redirected URL instead")
-	configureGit := flags.String("configure-git", "", "register the git credential helper: global, local, or empty to skip")
-	if err := flags.Parse(args); err != nil {
-		return 2
-	}
-	if s := *configureGit; s != "" && s != "global" && s != "local" {
-		fmt.Fprintf(os.Stderr, "invalid -configure-git %q (want global or local)\n", s)
-		return 2
-	}
+type SetupCmd struct {
+	Org          string `help:"GitHub org to create the App under (default: personal account)"`
+	Name         string `help:"App name (default kirigo-agent-git)"`
+	Port         int    `help:"localhost callback port (default 8765)"`
+	Paste        bool   `help:"skip the local server; paste the redirected URL instead"`
+	ConfigureGit string `name:"configure-git" help:"register the git credential helper: global, local, or empty to skip"`
+}
 
+func (c *SetupCmd) Run() error {
+	if s := c.ConfigureGit; s != "" && s != "global" && s != "local" {
+		return configErr{fmt.Errorf("invalid --configure-git %q (want global or local)", s)}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-
 	_, err := ghapp.RunSetup(ctx, ghapp.NewClient(), ghapp.SetupOptions{
-		Org:          *org,
-		Name:         *name,
-		Port:         *port,
-		Paste:        *paste,
-		ConfigureGit: *configureGit,
+		Org:          c.Org,
+		Name:         c.Name,
+		Port:         c.Port,
+		Paste:        c.Paste,
+		ConfigureGit: c.ConfigureGit,
 	})
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-	return 0
+	return err
 }
 
 func fetchToken(cfg ghapp.Config) (string, error) {

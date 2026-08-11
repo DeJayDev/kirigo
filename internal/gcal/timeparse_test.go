@@ -82,8 +82,7 @@ func TestParseTimeRelativeDays(t *testing.T) {
 
 func TestParseTimeInvalid(t *testing.T) {
 	_, err := parseTime("wat", chicago, refNow())
-	var ve *ValidationError
-	if !errors.As(err, &ve) {
+	if _, ok := errors.AsType[*ValidationError](err); !ok {
 		t.Errorf("want ValidationError, got %v", err)
 	}
 }

@@ -2,19 +2,16 @@ package googlecal
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
 
+	"github.com/DeJayDev/kirigo/internal/oauthlocal"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	calendar "google.golang.org/api/calendar/v3"
@@ -125,7 +122,7 @@ func RunSetup(ctx context.Context, opts SetupOptions) error {
 	cfg := OAuthConfig(opts.ClientID, opts.ClientSecret, redirectURL)
 
 	verifier := oauth2.GenerateVerifier()
-	state, err := randomState()
+	state, err := oauthlocal.RandomState()
 	if err != nil {
 		return err
 	}
@@ -162,13 +159,13 @@ func captureCode(ctx context.Context, opts SetupOptions, port int, authURL, stat
 		server := serveCallback(listener, state, codeCh, errCh)
 		defer server.Close()
 		fmt.Fprintf(opts.Err, "Open this URL in a browser to authorize:\n  %s\n", authURL)
-		fmt.Fprintf(opts.Err, "If this machine is remote, forward the port from your laptop first:\n  ssh -L %d:localhost:%d %s\n", port, port, sshTarget())
+		fmt.Fprintf(opts.Err, "If this machine is remote, forward the port from your laptop first:\n  ssh -L %d:localhost:%d %s\n", port, port, oauthlocal.SSHTarget())
 	} else {
 		fmt.Fprintf(opts.Err, "Open this URL in a browser, approve, then paste the redirected URL below:\n  %s\n", authURL)
 	}
 	fmt.Fprintf(opts.Err, "Or paste the full redirected URL here and press enter:\n")
 
-	go readPastedCode(opts.In, codeCh, errCh)
+	go oauthlocal.ReadPastedCode(opts.In, codeCh, errCh)
 
 	select {
 	case <-ctx.Done():
@@ -201,60 +198,4 @@ func serveCallback(listener net.Listener, state string, codeCh chan<- string, er
 		}
 	}()
 	return server
-}
-
-func readPastedCode(in io.Reader, codeCh chan<- string, errCh chan<- error) {
-	buf := make([]byte, 4096)
-	n, err := in.Read(buf)
-	if n > 0 {
-		code, perr := extractCode(strings.TrimSpace(string(buf[:n])))
-		if perr != nil {
-			errCh <- perr
-			return
-		}
-		codeCh <- code
-		return
-	}
-	if err != nil && err != io.EOF {
-		errCh <- err
-	}
-}
-
-// extractCode accepts a bare code or a full redirected URL.
-func extractCode(input string) (string, error) {
-	if input == "" {
-		return "", errors.New("empty input")
-	}
-	if !strings.Contains(input, "://") {
-		return input, nil
-	}
-	parsed, err := url.Parse(input)
-	if err != nil {
-		return "", fmt.Errorf("parse pasted URL: %w", err)
-	}
-	code := parsed.Query().Get("code")
-	if code == "" {
-		return "", errors.New("pasted URL has no code parameter")
-	}
-	return code, nil
-}
-
-func sshTarget() string {
-	user := os.Getenv("USER")
-	if user == "" {
-		user = "<user>"
-	}
-	host, err := os.Hostname()
-	if err != nil || host == "" {
-		host = "<this-host>"
-	}
-	return user + "@" + host
-}
-
-func randomState() (string, error) {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(b), nil
 }

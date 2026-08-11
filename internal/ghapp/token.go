@@ -69,7 +69,7 @@ func (s *Service) InstallationToken(ctx context.Context, cfg Config) (string, er
 	if err != nil {
 		return "", err
 	}
-	s.writeCache(cfg.AppID, installationID, cacheEntry{Token: token.Token, ExpiresAt: token.ExpiresAt})
+	s.writeCache(cfg.AppID, installationID, cacheEntry(token))
 	return token.Token, nil
 }
 

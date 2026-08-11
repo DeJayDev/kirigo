@@ -66,9 +66,9 @@ func (c *Client) ComputeRoutes(ctx context.Context, req *routingpb.ComputeRoutes
 	}
 	if response.StatusCode < 200 || response.StatusCode > 299 {
 		if msg := apiErrorMessage(payload); msg != "" {
-			return nil, fmt.Errorf("Routes API returned HTTP %s: %s", response.Status, msg)
+			return nil, fmt.Errorf("unexpected HTTP %s from Routes API: %s", response.Status, msg)
 		}
-		return nil, fmt.Errorf("Routes API returned HTTP %s", response.Status)
+		return nil, fmt.Errorf("unexpected HTTP %s from Routes API", response.Status)
 	}
 
 	var out routingpb.ComputeRoutesResponse

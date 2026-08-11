@@ -26,7 +26,7 @@ func loc(lat, lng float64) *routingpb.Location {
 	return &routingpb.Location{LatLng: &latlng.LatLng{Latitude: lat, Longitude: lng}}
 }
 
-func secs(n int) *durationpb.Duration { return durationpb.New(time.Duration(n) * time.Second) }
+func dur(n int) *durationpb.Duration { return durationpb.New(time.Duration(n) * time.Second) }
 
 func resp(routes ...*routingpb.Route) *routingpb.ComputeRoutesResponse {
 	return &routingpb.ComputeRoutesResponse{Routes: routes}
@@ -35,8 +35,8 @@ func resp(routes ...*routingpb.Route) *routingpb.ComputeRoutesResponse {
 func TestLookupReturnsCommuteResult(t *testing.T) {
 	client := &fakeRoutesClient{response: resp(&routingpb.Route{
 		DistanceMeters: 6759,
-		Duration:       secs(1440),
-		StaticDuration: secs(900),
+		Duration:       dur(1440),
+		StaticDuration: dur(900),
 		Description:    "US-101 N",
 		Legs: []*routingpb.RouteLeg{{
 			StartLocation: loc(37.7749123, -122.4194567),
@@ -89,7 +89,7 @@ func TestLookupReturnsCommuteResult(t *testing.T) {
 }
 
 func TestValidateRequiresAPIKey(t *testing.T) {
-	if err := (Config{Origin: "a", Destination: "b", Mode: DefaultMode}).Validate(); err == nil {
+	if _, err := (Config{Origin: "a", Destination: "b", Mode: DefaultMode}).Normalized(); err == nil {
 		t.Fatal("expected error")
 	}
 }
@@ -97,7 +97,7 @@ func TestValidateRequiresAPIKey(t *testing.T) {
 func TestArriveByDrivingSolvesDeparture(t *testing.T) {
 	// constant 20-minute drive regardless of departureTime -> converges immediately.
 	client := &fakeRoutesClient{response: resp(&routingpb.Route{
-		DistanceMeters: 10000, Duration: secs(1200), StaticDuration: secs(1000),
+		DistanceMeters: 10000, Duration: dur(1200), StaticDuration: dur(1000),
 		Legs: []*routingpb.RouteLeg{{StartLocation: loc(37.1, -122.1), EndLocation: loc(37.2, -122.2)}},
 	})}
 	now := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
@@ -123,10 +123,10 @@ func TestArriveByDrivingSolvesDeparture(t *testing.T) {
 
 func TestWaypointLegsLabeled(t *testing.T) {
 	client := &fakeRoutesClient{response: resp(&routingpb.Route{
-		DistanceMeters: 20000, Duration: secs(1800), StaticDuration: secs(1680),
+		DistanceMeters: 20000, Duration: dur(1800), StaticDuration: dur(1680),
 		Legs: []*routingpb.RouteLeg{
-			{Duration: secs(600), StaticDuration: secs(540), DistanceMeters: 8000, StartLocation: loc(1, 1), EndLocation: loc(2, 2)},
-			{Duration: secs(1200), StaticDuration: secs(1140), DistanceMeters: 12000, StartLocation: loc(2, 2), EndLocation: loc(3, 3)},
+			{Duration: dur(600), StaticDuration: dur(540), DistanceMeters: 8000, StartLocation: loc(1, 1), EndLocation: loc(2, 2)},
+			{Duration: dur(1200), StaticDuration: dur(1140), DistanceMeters: 12000, StartLocation: loc(2, 2), EndLocation: loc(3, 3)},
 		},
 	})}
 	now := time.Now()
@@ -158,12 +158,10 @@ func TestTollAndSegmentMapping(t *testing.T) {
 		t.Fatalf("toll = %#v", toll)
 	}
 	segs := toSegments([]*routingpb.SpeedReadingInterval{{
-		StartPolylinePointIndex: proto32(2), EndPolylinePointIndex: proto32(5),
+		StartPolylinePointIndex: new(int32(2)), EndPolylinePointIndex: new(int32(5)),
 		SpeedType: &routingpb.SpeedReadingInterval_Speed_{Speed: routingpb.SpeedReadingInterval_TRAFFIC_JAM},
 	}})
 	if len(segs) != 1 || segs[0].Speed != "traffic_jam" || segs[0].StartIndex != 2 || segs[0].EndIndex != 5 {
 		t.Fatalf("segments = %#v", segs)
 	}
 }
-
-func proto32(v int32) *int32 { return &v }

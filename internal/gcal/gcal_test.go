@@ -127,8 +127,7 @@ func TestDeleteRequiresConfirm(t *testing.T) {
 	a := testApp(t, f)
 
 	_, err := a.Delete(context.Background(), DeleteParams{EventID: "evt1"})
-	var ve *ValidationError
-	if !errors.As(err, &ve) {
+	if _, ok := errors.AsType[*ValidationError](err); !ok {
 		t.Fatalf("want ValidationError without --confirm, got %v", err)
 	}
 	if _, ok := f.byID["evt1"]; !ok {
@@ -170,8 +169,7 @@ func TestScopeFollowingUnsupportedAndAllTargetsMaster(t *testing.T) {
 	a := testApp(t, f)
 
 	_, err := a.Delete(context.Background(), DeleteParams{EventID: "inst1", Scope: "following", Confirm: true})
-	var ve *ValidationError
-	if !errors.As(err, &ve) {
+	if _, ok := errors.AsType[*ValidationError](err); !ok {
 		t.Fatalf("scope following should be a ValidationError, got %v", err)
 	}
 
@@ -278,7 +276,7 @@ func TestFreeGaps(t *testing.T) {
 		t.Fatalf("got %d gaps, want %d: %+v", len(free), len(want), free)
 	}
 	for i, w := range want {
-		if free[i]["start"] != w[0] || free[i]["end"] != w[1] {
+		if free[i].Start != w[0] || free[i].End != w[1] {
 			t.Errorf("gap %d = %v, want %v", i, free[i], w)
 		}
 	}

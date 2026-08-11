@@ -100,11 +100,6 @@ type TextDistance struct {
 	Meters int    `json:"meters"`
 }
 
-func (c Config) Validate() error {
-	_, err := c.Normalized()
-	return err
-}
-
 func (c Config) Normalized() (Config, error) {
 	c.Origin = strings.TrimSpace(c.Origin)
 	c.Destination = strings.TrimSpace(c.Destination)
@@ -128,7 +123,7 @@ func (c Config) Normalized() (Config, error) {
 		return Config{}, errors.New("destination is required")
 	}
 	if c.APIKey == "" {
-		return Config{}, errors.New("Google Maps API key is required via GOOGLE_MAPS_API_KEY")
+		return Config{}, errors.New("missing Google Maps API key; set GOOGLE_MAPS_API_KEY")
 	}
 	if c.Mode == "" {
 		c.Mode = DefaultMode
@@ -198,7 +193,7 @@ func Lookup(ctx context.Context, client routesClient, cfg Config, now func() tim
 		return Result{}, err
 	}
 	if response == nil || len(response.GetRoutes()) == 0 {
-		return Result{}, errors.New("Routes API returned no routes (check that origin, destination, and waypoints resolve to routable places)")
+		return Result{}, errors.New("no routes returned by the Routes API (check that origin, destination, and waypoints resolve to routable places)")
 	}
 
 	points := append([]string{cfg.Origin}, cfg.Waypoints...)
@@ -282,7 +277,7 @@ func solveDeparture(ctx context.Context, client routesClient, cfg Config, mode r
 		return time.Time{}, err
 	}
 	if len(r.GetRoutes()) == 0 {
-		return time.Time{}, errors.New("Routes API returned no routes")
+		return time.Time{}, errors.New("no routes returned by the Routes API")
 	}
 	depart := arrival.Add(-time.Duration(routeSeconds(r.GetRoutes()[0])) * time.Second)
 	if !driving {
@@ -302,7 +297,7 @@ func solveDeparture(ctx context.Context, client routesClient, cfg Config, mode r
 			return time.Time{}, err
 		}
 		if len(r.GetRoutes()) == 0 {
-			return time.Time{}, errors.New("Routes API returned no routes")
+			return time.Time{}, errors.New("no routes returned by the Routes API")
 		}
 		predicted := depart.Add(time.Duration(routeSeconds(r.GetRoutes()[0])) * time.Second)
 		diff := arrival.Sub(predicted)
@@ -320,15 +315,15 @@ func routeSeconds(r *routingpb.Route) int {
 
 func convertRoute(r *routingpb.Route, cfg Config, points []string) (Route, Place, Place, error) {
 	if len(r.GetLegs()) == 0 {
-		return Route{}, Place{}, Place{}, errors.New("Routes API route has no legs")
+		return Route{}, Place{}, Place{}, errors.New("route from the Routes API has no legs")
 	}
 	traffic := int(r.GetDuration().GetSeconds())
 	static := int(r.GetStaticDuration().GetSeconds())
 
 	out := Route{
-		Duration:       TextSeconds{Text: googlemaps.FormatDuration(traffic), Seconds: traffic},
-		StaticDuration: TextSeconds{Text: googlemaps.FormatDuration(static), Seconds: static},
-		Distance:       TextDistance{Text: formatDistance(int(r.GetDistanceMeters())), Meters: int(r.GetDistanceMeters())},
+		Duration:       secs(traffic),
+		StaticDuration: secs(static),
+		Distance:       dist(int(r.GetDistanceMeters())),
 		Description:    r.GetDescription(),
 	}
 	if cfg.Segments || len(r.GetLegs()) > 1 {
@@ -346,8 +341,8 @@ func convertRoute(r *routingpb.Route, cfg Config, points []string) (Route, Place
 
 	first := r.GetLegs()[0]
 	last := r.GetLegs()[len(r.GetLegs())-1]
-	origin := Place{Address: cfg.Origin, Lat: roundCoordinate(first.GetStartLocation().GetLatLng().GetLatitude()), Lng: roundCoordinate(first.GetStartLocation().GetLatLng().GetLongitude())}
-	destination := Place{Address: cfg.Destination, Lat: roundCoordinate(last.GetEndLocation().GetLatLng().GetLatitude()), Lng: roundCoordinate(last.GetEndLocation().GetLatLng().GetLongitude())}
+	origin := place(cfg.Origin, first.GetStartLocation())
+	destination := place(cfg.Destination, last.GetEndLocation())
 	return out, origin, destination, nil
 }
 
@@ -355,11 +350,11 @@ func toLeg(leg *routingpb.RouteLeg, startAddr, endAddr string) Leg {
 	d := int(leg.GetDuration().GetSeconds())
 	sd := int(leg.GetStaticDuration().GetSeconds())
 	return Leg{
-		Duration:       TextSeconds{Text: googlemaps.FormatDuration(d), Seconds: d},
-		StaticDuration: TextSeconds{Text: googlemaps.FormatDuration(sd), Seconds: sd},
-		Distance:       TextDistance{Text: formatDistance(int(leg.GetDistanceMeters())), Meters: int(leg.GetDistanceMeters())},
-		Start:          Place{Address: startAddr, Lat: roundCoordinate(leg.GetStartLocation().GetLatLng().GetLatitude()), Lng: roundCoordinate(leg.GetStartLocation().GetLatLng().GetLongitude())},
-		End:            Place{Address: endAddr, Lat: roundCoordinate(leg.GetEndLocation().GetLatLng().GetLatitude()), Lng: roundCoordinate(leg.GetEndLocation().GetLatLng().GetLongitude())},
+		Duration:       secs(d),
+		StaticDuration: secs(sd),
+		Distance:       dist(int(leg.GetDistanceMeters())),
+		Start:          place(startAddr, leg.GetStartLocation()),
+		End:            place(endAddr, leg.GetEndLocation()),
 		Segments:       toSegments(leg.GetTravelAdvisory().GetSpeedReadingIntervals()),
 	}
 }
@@ -441,4 +436,17 @@ func formatDistance(meters int) string {
 
 func roundCoordinate(value float64) float64 {
 	return math.Round(value*1_000_000) / 1_000_000
+}
+
+func place(addr string, loc *routingpb.Location) Place {
+	ll := loc.GetLatLng()
+	return Place{Address: addr, Lat: roundCoordinate(ll.GetLatitude()), Lng: roundCoordinate(ll.GetLongitude())}
+}
+
+func secs(n int) TextSeconds {
+	return TextSeconds{Text: googlemaps.FormatDuration(n), Seconds: n}
+}
+
+func dist(meters int) TextDistance {
+	return TextDistance{Text: formatDistance(meters), Meters: meters}
 }

@@ -4,21 +4,14 @@ package output
 
 import (
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 
-	"github.com/DeJayDev/kirigo/internal/jsonout"
 	toon "github.com/toon-format/toon-go"
 )
-
-// RegisterFlag adds the standard -format flag to fs and returns its value pointer,
-// so every binary exposes output selection identically.
-func RegisterFlag(fs *flag.FlagSet) *string {
-	return fs.String("format", "", "output format: json (default) or toon; overrides KIRIGO_FORMAT")
-}
 
 // WriteError writes the standard {status, error} envelope to w in the given format.
 func WriteError(w io.Writer, msg, format string) error {
@@ -61,12 +54,20 @@ func agentContext() bool {
 func Write(w io.Writer, v any, format string) error {
 	switch format {
 	case "", "json":
-		return jsonout.Write(w, v)
+		return writeJSON(w, v)
 	case "toon":
 		return writeTOON(w, v)
 	default:
 		return fmt.Errorf("unknown output format %q (want json or toon)", format)
 	}
+}
+
+// writeJSON emits raw 2-space-indented JSON with HTML escaping off.
+func writeJSON(w io.Writer, v any) error {
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	return enc.Encode(v)
 }
 
 // writeTOON normalizes v through encoding/json first so TOON mirrors the JSON
@@ -130,12 +131,7 @@ func isComposite(v any) bool {
 }
 
 func allScalar(t []any) bool {
-	for _, el := range t {
-		if isComposite(el) {
-			return false
-		}
-	}
-	return true
+	return !slices.ContainsFunc(t, isComposite)
 }
 
 func allObjects(t []any) bool {

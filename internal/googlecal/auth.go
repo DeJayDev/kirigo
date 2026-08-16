@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
+	"time"
 
 	"github.com/DeJayDev/kirigo/internal/oauthlocal"
 	"golang.org/x/oauth2"
@@ -37,28 +39,45 @@ func OAuthConfig(clientID, clientSecret, redirectURL string) *oauth2.Config {
 
 // TokenSource returns a source that refreshes the stored token and persists it
 // back to path whenever it changes.
+//
+// Refresh uses a detached context so a short command deadline cannot cancel the
+// token endpoint call after the access token has already been judged expired.
 func TokenSource(ctx context.Context, cfg *oauth2.Config, path string) (oauth2.TokenSource, error) {
 	tok, err := loadToken(path)
 	if err != nil {
 		return nil, err
 	}
-	return oauth2.ReuseTokenSource(nil, &persistingSource{
-		base: cfg.TokenSource(ctx, tok),
+	// oauth2 treats a zero Expiry as "never expires", so a token.json without
+	// expiry would keep shipping a dead access token forever. Force a refresh.
+	if tok.RefreshToken != "" && tok.Expiry.IsZero() {
+		tok.Expiry = time.Now().Add(-time.Hour)
+	}
+	if tok.RefreshToken == "" && !tok.Valid() {
+		return nil, fmt.Errorf("stored token has no refresh token; run: gcal setup")
+	}
+	refreshCtx := context.WithoutCancel(ctx)
+	return &persistingSource{
+		base: cfg.TokenSource(refreshCtx, tok),
 		path: path,
-	}), nil
+		last: tok.AccessToken,
+	}, nil
 }
 
 type persistingSource struct {
 	base oauth2.TokenSource
 	path string
+
+	mu   sync.Mutex
 	last string
 }
 
 func (p *persistingSource) Token() (*oauth2.Token, error) {
 	tok, err := p.base.Token()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("refresh access token: %w", err)
 	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if tok.AccessToken != p.last {
 		if err := saveToken(p.path, tok); err != nil {
 			return nil, fmt.Errorf("persist refreshed token: %w", err)
@@ -80,6 +99,9 @@ func loadToken(path string) (*oauth2.Token, error) {
 	if err := json.Unmarshal(data, &tok); err != nil {
 		return nil, fmt.Errorf("parse token %s: %w", path, err)
 	}
+	if tok.AccessToken == "" && tok.RefreshToken == "" {
+		return nil, fmt.Errorf("token %s is empty; run: gcal setup", path)
+	}
 	return &tok, nil
 }
 
@@ -87,11 +109,28 @@ func saveToken(path string, tok *oauth2.Token) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create token dir: %w", err)
 	}
+	// Keep a previously stored refresh token if the token endpoint omitted it
+	// (normal for Google refresh responses). load+merge only when needed.
+	if tok.RefreshToken == "" {
+		if prev, err := loadToken(path); err == nil && prev.RefreshToken != "" {
+			cloned := *tok
+			cloned.RefreshToken = prev.RefreshToken
+			tok = &cloned
+		}
+	}
 	data, err := json.MarshalIndent(tok, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o600)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 type SetupOptions struct {
@@ -140,7 +179,12 @@ func RunSetup(ctx context.Context, opts SetupOptions) error {
 		return fmt.Errorf("exchange code: %w", err)
 	}
 	if tok.RefreshToken == "" {
-		fmt.Fprintln(opts.Err, "warning: Google returned no refresh token; revoke prior access and re-run setup.")
+		return errors.New("Google returned no refresh token; revoke this app's access at https://myaccount.google.com/permissions and re-run: gcal setup")
+	}
+	if tok.Expiry.IsZero() {
+		// Exchange should set this from expires_in; refuse to store a token that
+		// oauth2 would treat as non-expiring and never refresh.
+		return errors.New("Google returned no access token expiry; re-run: gcal setup")
 	}
 	if err := saveToken(opts.TokenPath, tok); err != nil {
 		return err

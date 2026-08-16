@@ -60,7 +60,9 @@ func (p *persistingSource) Token() (*oauth2.Token, error) {
 		return nil, err
 	}
 	if tok.AccessToken != p.last {
-		_ = saveToken(p.path, tok)
+		if err := saveToken(p.path, tok); err != nil {
+			return nil, fmt.Errorf("persist refreshed token: %w", err)
+		}
 		p.last = tok.AccessToken
 	}
 	return tok, nil

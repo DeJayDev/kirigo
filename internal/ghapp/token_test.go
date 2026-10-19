@@ -15,28 +15,26 @@ func testConfig() Config {
 	return Config{AppID: "123456", InstallationID: "42", PrivateKeyPEM: testPrivateKeyPEM}
 }
 
-func newTestService(t *testing.T, handler http.HandlerFunc, now time.Time) (*Service, func()) {
+func newTestService(t *testing.T, handler http.HandlerFunc, now time.Time) *Service {
 	t.Helper()
-	server := httptest.NewServer(handler)
-	service := &Service{
+	server := httptest.NewTestServer(t, handler)
+	return &Service{
 		Client:    NewClientWithHTTP(server.Client(), server.URL),
 		CachePath: filepath.Join(t.TempDir(), cacheFileName),
 		Now:       func() time.Time { return now },
 	}
-	return service, server.Close
 }
 
 func TestInstallationTokenCacheMissThenHit(t *testing.T) {
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
 	var calls int
-	service, closeFn := newTestService(t, func(w http.ResponseWriter, r *http.Request) {
+	service := newTestService(t, func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		if r.URL.Path != "/app/installations/42/access_tokens" {
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
 		fmt.Fprintf(w, `{"token":"ghs_fresh","expires_at":%q}`, now.Add(time.Hour).Format(time.RFC3339))
 	}, now)
-	defer closeFn()
 
 	cfg := testConfig()
 	token, err := service.InstallationToken(context.Background(), cfg)
@@ -58,12 +56,11 @@ func TestInstallationTokenCacheMissThenHit(t *testing.T) {
 func TestInstallationTokenCacheExpiryRefetches(t *testing.T) {
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
 	var calls int
-	service, closeFn := newTestService(t, func(w http.ResponseWriter, _ *http.Request) {
+	service := newTestService(t, func(w http.ResponseWriter, _ *http.Request) {
 		calls++
 		// Token expires within the refresh margin, so it must never be reused.
 		fmt.Fprintf(w, `{"token":"ghs_%d","expires_at":%q}`, calls, now.Add(2*time.Minute).Format(time.RFC3339))
 	}, now)
-	defer closeFn()
 
 	cfg := testConfig()
 	if _, err := service.InstallationToken(context.Background(), cfg); err != nil {
@@ -79,7 +76,7 @@ func TestInstallationTokenCacheExpiryRefetches(t *testing.T) {
 
 func TestInstallationTokenDiscoversSingleInstallation(t *testing.T) {
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
-	service, closeFn := newTestService(t, func(w http.ResponseWriter, r *http.Request) {
+	service := newTestService(t, func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/app/installations":
 			fmt.Fprint(w, `[{"id":99,"account":{"login":"acme"}}]`)
@@ -92,7 +89,6 @@ func TestInstallationTokenDiscoversSingleInstallation(t *testing.T) {
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
 	}, now)
-	defer closeFn()
 
 	cfg := Config{AppID: "123456", PrivateKeyPEM: testPrivateKeyPEM}
 	token, err := service.InstallationToken(context.Background(), cfg)

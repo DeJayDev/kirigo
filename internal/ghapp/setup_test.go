@@ -9,7 +9,7 @@ import (
 )
 
 func TestConvertManifestExchange(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/app-manifests/abc123/conversions" {
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
@@ -27,7 +27,6 @@ func TestConvertManifestExchange(t *testing.T) {
 			"html_url": "https://github.com/apps/kirigo-agent-git"
 		}`))
 	}))
-	defer server.Close()
 
 	app, err := NewClientWithHTTP(server.Client(), server.URL).ConvertManifest(context.Background(), "abc123")
 	if err != nil {

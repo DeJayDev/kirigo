@@ -1,10 +1,12 @@
 package configenv
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/joho/godotenv"
 )
@@ -16,7 +18,40 @@ func LoadDefault() error {
 	if err != nil {
 		return err
 	}
-	return Load(paths...)
+	if err := Load(paths...); err != nil {
+		return err
+	}
+	// Go reads TZ once, on first use of time.Local, which may predate the env file.
+	if tz := os.Getenv("TZ"); tz != "" {
+		loc, err := time.LoadLocation(tz)
+		if err != nil {
+			return fmt.Errorf("load TZ %q: %w", tz, err)
+		}
+		time.Local = loc
+	}
+	return nil
+}
+
+// LoadPlaces reads named places ({"home": "123 Main St"}) from places.json in the
+// kirigo config directory. A missing file means no places.
+func LoadPlaces() (map[string]string, error) {
+	kirigoDir, err := Dir()
+	if err != nil {
+		return nil, err
+	}
+	path := filepath.Join(kirigoDir, "places.json")
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read places %s: %w", path, err)
+	}
+	var places map[string]string
+	if err := json.Unmarshal(data, &places); err != nil {
+		return nil, fmt.Errorf("parse places %s: %w", path, err)
+	}
+	return places, nil
 }
 
 func Load(paths ...string) error {

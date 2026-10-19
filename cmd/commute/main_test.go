@@ -3,6 +3,8 @@ package main
 import (
 	"os"
 	"testing"
+
+	"github.com/alecthomas/kong"
 )
 
 // runSilent runs run() with the binary's stdout/stderr envelopes discarded, so
@@ -34,6 +36,8 @@ func TestRunExitCodes(t *testing.T) {
 		{"no args is a validation error", nil, 2},
 		{"missing api key", []string{"--origin", "a", "--destination", "b"}, 2},
 		{"unknown flag", []string{"--nope"}, 2},
+		{"search missing api key", []string{"search", "coffee"}, 2},
+		{"search requires a query", []string{"search"}, 2},
 		{"repeatable + interspersed flags parse", []string{"--origin", "a", "--waypoint", "x", "--destination", "b", "--waypoint", "y"}, 2},
 	}
 	for _, tc := range cases {
@@ -42,5 +46,19 @@ func TestRunExitCodes(t *testing.T) {
 				t.Errorf("run(%v) = %d, want %d", tc.args, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestWaypointKeepsCommas(t *testing.T) {
+	var cli CLI
+	parser, err := kong.New(&cli)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parser.Parse([]string{"--origin", "a", "--destination", "b", "--waypoint", "975 Bryant St, San Francisco, CA 94103", "--waypoint", "c"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(cli.Route.Waypoint) != 2 || cli.Route.Waypoint[0] != "975 Bryant St, San Francisco, CA 94103" {
+		t.Fatalf("waypoints = %q", cli.Route.Waypoint)
 	}
 }

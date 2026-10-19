@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"regexp"
 	"strings"
 	"time"
 
@@ -38,6 +39,7 @@ type Config struct {
 	Tolls        bool
 	Segments     bool
 	APIKey       string
+	Places       map[string]string
 }
 
 type Result struct {
@@ -66,6 +68,7 @@ type Route struct {
 	Legs           []Leg        `json:"legs,omitempty"`
 	Toll           *Toll        `json:"toll,omitempty"`
 	Segments       []Segment    `json:"segments,omitempty"`
+	Streets        []string     `json:"streets,omitempty"`
 	Polyline       string       `json:"polyline,omitempty"`
 }
 
@@ -101,8 +104,8 @@ type TextDistance struct {
 }
 
 func (c Config) Normalized() (Config, error) {
-	c.Origin = strings.TrimSpace(c.Origin)
-	c.Destination = strings.TrimSpace(c.Destination)
+	c.Origin = expandPlace(c.Places, c.Origin)
+	c.Destination = expandPlace(c.Places, c.Destination)
 	c.Mode = strings.TrimSpace(c.Mode)
 	c.APIKey = strings.TrimSpace(c.APIKey)
 	c.Arrival = strings.TrimSpace(c.Arrival)
@@ -110,7 +113,7 @@ func (c Config) Normalized() (Config, error) {
 
 	stops := make([]string, 0, len(c.Waypoints))
 	for _, w := range c.Waypoints {
-		if w = strings.TrimSpace(w); w != "" {
+		if w = expandPlace(c.Places, w); w != "" {
 			stops = append(stops, w)
 		}
 	}
@@ -192,8 +195,8 @@ func Lookup(ctx context.Context, client routesClient, cfg Config, now func() tim
 	if err != nil {
 		return Result{}, err
 	}
-	if response == nil || len(response.GetRoutes()) == 0 {
-		return Result{}, errors.New("no routes returned by the Routes API (check that origin, destination, and waypoints resolve to routable places)")
+	if err := requireRoutes(response, cfg); err != nil {
+		return Result{}, err
 	}
 
 	points := append([]string{cfg.Origin}, cfg.Waypoints...)
@@ -236,13 +239,13 @@ func Lookup(ctx context.Context, client routesClient, cfg Config, now func() tim
 
 func buildRequest(cfg Config, mode routingpb.RouteTravelMode) *routingpb.ComputeRoutesRequest {
 	req := &routingpb.ComputeRoutesRequest{
-		Origin:                   address(cfg.Origin),
-		Destination:              address(cfg.Destination),
+		Origin:                   waypoint(cfg.Origin),
+		Destination:              waypoint(cfg.Destination),
 		TravelMode:               mode,
 		ComputeAlternativeRoutes: cfg.Alternatives,
 	}
 	for _, w := range cfg.Waypoints {
-		req.Intermediates = append(req.Intermediates, address(w))
+		req.Intermediates = append(req.Intermediates, waypoint(w))
 	}
 	if mode == routingpb.RouteTravelMode_DRIVE {
 		req.RoutingPreference = routingpb.RoutingPreference_TRAFFIC_AWARE
@@ -256,8 +259,11 @@ func buildRequest(cfg Config, mode routingpb.RouteTravelMode) *routingpb.Compute
 	return req
 }
 
-func address(a string) *routingpb.Waypoint {
-	return &routingpb.Waypoint{LocationType: &routingpb.Waypoint_Address{Address: a}}
+func waypoint(value string) *routingpb.Waypoint {
+	if id, ok := strings.CutPrefix(value, "place_id:"); ok {
+		return &routingpb.Waypoint{LocationType: &routingpb.Waypoint_PlaceId{PlaceId: id}}
+	}
+	return &routingpb.Waypoint{LocationType: &routingpb.Waypoint_Address{Address: value}}
 }
 
 // solveDeparture finds when to leave to arrive by arrival. Walking/bicycling
@@ -276,8 +282,8 @@ func solveDeparture(ctx context.Context, client routesClient, cfg Config, mode r
 	if err != nil {
 		return time.Time{}, err
 	}
-	if len(r.GetRoutes()) == 0 {
-		return time.Time{}, errors.New("no routes returned by the Routes API")
+	if err := requireRoutes(r, cfg); err != nil {
+		return time.Time{}, err
 	}
 	depart := arrival.Add(-time.Duration(routeSeconds(r.GetRoutes()[0])) * time.Second)
 	if !driving {
@@ -296,8 +302,8 @@ func solveDeparture(ctx context.Context, client routesClient, cfg Config, mode r
 		if err != nil {
 			return time.Time{}, err
 		}
-		if len(r.GetRoutes()) == 0 {
-			return time.Time{}, errors.New("no routes returned by the Routes API")
+		if err := requireRoutes(r, cfg); err != nil {
+			return time.Time{}, err
 		}
 		predicted := depart.Add(time.Duration(routeSeconds(r.GetRoutes()[0])) * time.Second)
 		diff := arrival.Sub(predicted)
@@ -307,6 +313,31 @@ func solveDeparture(ctx context.Context, client routesClient, cfg Config, mode r
 		depart = depart.Add(diff)
 	}
 	return depart, nil
+}
+
+// requireRoutes names the inputs Google could not geocode when no route comes back.
+func requireRoutes(r *routingpb.ComputeRoutesResponse, cfg Config) error {
+	if len(r.GetRoutes()) > 0 {
+		return nil
+	}
+	gr := r.GetGeocodingResults()
+	var unresolved []string
+	if gr.GetOrigin().GetGeocoderStatus().GetCode() != 0 {
+		unresolved = append(unresolved, cfg.Origin)
+	}
+	for _, g := range gr.GetIntermediates() {
+		i := int(g.GetIntermediateWaypointRequestIndex())
+		if g.GetGeocoderStatus().GetCode() != 0 && i < len(cfg.Waypoints) {
+			unresolved = append(unresolved, cfg.Waypoints[i])
+		}
+	}
+	if gr.GetDestination().GetGeocoderStatus().GetCode() != 0 {
+		unresolved = append(unresolved, cfg.Destination)
+	}
+	if len(unresolved) > 0 {
+		return fmt.Errorf("the Routes API could not find %q", unresolved)
+	}
+	return errors.New("no routes returned by the Routes API (check that origin, destination, and waypoints resolve to routable places)")
 }
 
 func routeSeconds(r *routingpb.Route) int {
@@ -336,6 +367,7 @@ func convertRoute(r *routingpb.Route, cfg Config, points []string) (Route, Place
 	}
 	if cfg.Segments {
 		out.Segments = toSegments(r.GetTravelAdvisory().GetSpeedReadingIntervals())
+		out.Streets = toStreets(r.GetLegs())
 		out.Polyline = r.GetPolyline().GetEncodedPolyline()
 	}
 
@@ -381,6 +413,33 @@ func toSegments(intervals []*routingpb.SpeedReadingInterval) []Segment {
 		})
 	}
 	return out
+}
+
+// streetPattern takes the road after "on"/"onto" in a step's first line,
+// dropping a trailing "toward ..." ("Merge onto I-80 E toward Oakland" -> "I-80 E").
+var streetPattern = regexp.MustCompile(`\b(?:on|onto) (.+?)(?: toward .*)?$`)
+
+func toStreets(legs []*routingpb.RouteLeg) []string {
+	var streets []string
+	for _, leg := range legs {
+		for _, step := range leg.GetSteps() {
+			line, _, _ := strings.Cut(step.GetNavigationInstruction().GetInstructions(), "\n")
+			m := streetPattern.FindStringSubmatch(line)
+			if m == nil || (len(streets) > 0 && streets[len(streets)-1] == m[1]) {
+				continue
+			}
+			streets = append(streets, m[1])
+		}
+	}
+	return streets
+}
+
+func expandPlace(places map[string]string, value string) string {
+	value = strings.TrimSpace(value)
+	if address, ok := places[value]; ok {
+		return address
+	}
+	return value
 }
 
 func labelAt(points []string, i int) string {

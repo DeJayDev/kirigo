@@ -2,11 +2,15 @@ package commute
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
+	placespb "cloud.google.com/go/maps/places/apiv1/placespb"
 	routingpb "cloud.google.com/go/maps/routing/apiv2/routingpb"
+	"google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/genproto/googleapis/type/latlng"
+	localized "google.golang.org/genproto/googleapis/type/localized_text"
 	"google.golang.org/genproto/googleapis/type/money"
 	"google.golang.org/protobuf/types/known/durationpb"
 )
@@ -163,5 +167,105 @@ func TestTollAndSegmentMapping(t *testing.T) {
 	}})
 	if len(segs) != 1 || segs[0].Speed != "traffic_jam" || segs[0].StartIndex != 2 || segs[0].EndIndex != 5 {
 		t.Fatalf("segments = %#v", segs)
+	}
+}
+
+func TestPlacesExpandBeforeRequest(t *testing.T) {
+	client := &fakeRoutesClient{response: resp(&routingpb.Route{
+		Duration: dur(600), StaticDuration: dur(600),
+		Legs: []*routingpb.RouteLeg{{StartLocation: loc(1, 1), EndLocation: loc(2, 2)}, {StartLocation: loc(2, 2), EndLocation: loc(3, 3)}},
+	})}
+	places := map[string]string{"home": "123 Main St, SF", "gym": "500 Gym Ave"}
+	result, err := Lookup(context.Background(), client, Config{
+		Origin: " home ", Destination: "1 Ferry Building, SF", Waypoints: []string{"gym"}, APIKey: "k", Places: places,
+	}, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := client.requests[0]
+	if req.GetOrigin().GetAddress() != "123 Main St, SF" || req.GetIntermediates()[0].GetAddress() != "500 Gym Ave" {
+		t.Fatalf("request = %v", req)
+	}
+	if req.GetDestination().GetAddress() != "1 Ferry Building, SF" {
+		t.Fatalf("destination = %q", req.GetDestination().GetAddress())
+	}
+	if result.Origin.Address != "123 Main St, SF" {
+		t.Fatalf("origin = %q", result.Origin.Address)
+	}
+}
+
+func TestUnresolvedWaypointNamed(t *testing.T) {
+	client := &fakeRoutesClient{response: &routingpb.ComputeRoutesResponse{GeocodingResults: &routingpb.GeocodingResults{
+		Intermediates: []*routingpb.GeocodedWaypoint{
+			{IntermediateWaypointRequestIndex: new(int32(1)), GeocoderStatus: &status.Status{Code: 5, Message: "Address not found."}},
+		},
+	}}}
+	_, err := Lookup(context.Background(), client, Config{
+		Origin: "a", Destination: "b", Waypoints: []string{"ok stop", "home"}, APIKey: "k",
+	}, time.Now)
+	if err == nil || err.Error() != `the Routes API could not find ["home"]` {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestStreetsFromSteps(t *testing.T) {
+	step := func(s string) *routingpb.RouteLegStep {
+		return &routingpb.RouteLegStep{NavigationInstruction: &routingpb.NavigationInstruction{Instructions: s}}
+	}
+	legs := []*routingpb.RouteLeg{
+		{Steps: []*routingpb.RouteLegStep{
+			step("Head northwest on The Embarcadero S"),
+			step("Turn left onto Washington St\nParts of this road may be closed at certain times or days"),
+			step("Take exit 2B"),
+			step("Turn right onto Geary St\nDestination will be on the right"),
+		}},
+		{Steps: []*routingpb.RouteLegStep{
+			step("Head west on Geary St"),
+			step("Merge onto I-80 E toward Oakland"),
+			step("Continue straight to stay on 4th St"),
+		}},
+	}
+	got := strings.Join(toStreets(legs), ", ")
+	if want := "The Embarcadero S, Washington St, Geary St, I-80 E, 4th St"; got != want {
+		t.Fatalf("streets = %q, want %q", got, want)
+	}
+}
+
+type fakePlacesClient struct {
+	request  *placespb.SearchTextRequest
+	response *placespb.SearchTextResponse
+}
+
+func (f *fakePlacesClient) SearchText(_ context.Context, req *placespb.SearchTextRequest, _ string) (*placespb.SearchTextResponse, error) {
+	f.request = req
+	return f.response, nil
+}
+
+func TestSearchNearNamedPlace(t *testing.T) {
+	client := &fakePlacesClient{response: &placespb.SearchTextResponse{Places: []*placespb.Place{{
+		Id:               "abc",
+		DisplayName:      &localized.LocalizedText{Text: "Blue Bottle"},
+		FormattedAddress: "1 Ferry Building, SF",
+		Location:         &latlng.LatLng{Latitude: 37.7955123, Longitude: -122.3937456},
+	}}}}
+	result, err := Search(context.Background(), client, "coffee", "home", map[string]string{"home": "123 Main St, SF"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.request.GetTextQuery() != "coffee near 123 Main St, SF" {
+		t.Fatalf("textQuery = %q", client.request.GetTextQuery())
+	}
+	want := FoundPlace{Name: "Blue Bottle", Address: "1 Ferry Building, SF", Lat: 37.795512, Lng: -122.393746, PlaceID: "abc"}
+	if len(result.Places) != 1 || result.Places[0] != want {
+		t.Fatalf("places = %#v", result.Places)
+	}
+}
+
+func TestPlaceIDInput(t *testing.T) {
+	if got := waypoint("place_id:ChIJabc").GetPlaceId(); got != "ChIJabc" {
+		t.Fatalf("place id = %q", got)
+	}
+	if got := waypoint("975 Bryant St").GetAddress(); got != "975 Bryant St" {
+		t.Fatalf("address = %q", got)
 	}
 }

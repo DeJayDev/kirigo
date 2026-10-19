@@ -1,6 +1,6 @@
 # commute
 
-Fetches real-time driving commute data from the Google Maps Routes API using `TRAFFIC_AWARE` routing. JSON in, JSON out.
+Fetches real-time driving commute data from the Google Maps Routes API using `TRAFFIC_AWARE` routing, and searches places with the Places API (New). JSON in, JSON out.
 
 ## Usage
 
@@ -15,16 +15,35 @@ go run ./cmd/commute \
 
 ## Flags
 
-- `--origin` required origin address/place/lat,lng.
-- `--destination` required destination address/place/lat,lng.
+- `--origin` required origin: address, lat,lng, named place, or `place_id:<id>` (from `search`).
+- `--destination` required destination: address, lat,lng, named place, or `place_id:<id>`.
 - `--mode` travel mode: `driving` (default), `transit`, `walking`, `bicycling`.
 - `--alternatives` include alternative routes.
 - `--arrival` arrive-by time (`HH:MM`, `3:04pm`, or RFC3339) — computes when to leave (`depart_at`).
 - `--departure` depart-at time (default now).
-- `--waypoint` intermediate stop, ordered, repeatable.
+- `--waypoint` intermediate stop, ordered, repeatable. Each is a stopover (`via: false`): one leg per stop, and the route duration is the sum of the legs.
 - `--tolls` include toll cost when the route has tolls (driving).
-- `--segments` include per-leg times and traffic-speed spans — see where it's slow in one call (driving).
+- `--segments` include per-leg times, traffic-speed spans, and `streets` (the road sequence, e.g. `Battery St, Howard St, 8th St`) — see where it's slow in one call (driving).
 - `--format` output format: `json` (default) or `toon`.
+
+## Places
+
+Origin, destination, waypoints, and `search --near` accept names from `~/.config/kirigo/places.json`, expanded before the API call:
+
+```json
+{"home": "123 Main St, SF", "work": "1 Ferry Building, SF"}
+```
+
+Names match exactly; anything else is sent to Google as written. If Google can't geocode an input, the error names it.
+
+## Search
+
+```bash
+commute search "coffee" --near work    # top 5: name, address, lat/lng, place_id
+commute --origin home --destination place_id:ChIJ...    # route to a result without re-geocoding
+```
+
+Requires the Places API (New) enabled on the key's project.
 
 ## Examples
 
@@ -35,6 +54,8 @@ commute --origin "123 Main St, SF" --destination "1 Ferry Building, SF" --mode t
 commute --origin "123 Main St, SF" --destination "PNC Burlingame" --waypoint "Copper Chimney" --alternatives
 commute --origin "123 Main St, SF" --destination "1 Ferry Building, SF" --segments          # which stretch is jammed
 ```
+
+Clock times (`18:00`, `3:04pm`) are in the process's local zone. Set `TZ` (e.g. `TZ=America/Los_Angeles`) in the env file on UTC hosts; RFC3339 times carry their own offset.
 
 `--arrival` is native for transit; for driving it iterates `departureTime` against traffic until `depart_at + duration` lands on your arrival (a few API calls). All-scalar knobs are additive — the plain two-arg call still returns the original shape plus `mode`.
 

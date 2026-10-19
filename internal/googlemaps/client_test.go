@@ -17,7 +17,7 @@ func addr(a string) *routingpb.Waypoint {
 }
 
 func TestComputeRoutesCallsRoutesAPI(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			t.Fatalf("method = %s, want POST", r.Method)
 		}
@@ -46,7 +46,6 @@ func TestComputeRoutesCallsRoutesAPI(t *testing.T) {
 		}
 		_, _ = w.Write([]byte(`{"routes":[{"description":"US-101 N","distanceMeters":6759,"duration":"1440s","staticDuration":"900s","legs":[{"startLocation":{"latLng":{"latitude":37.7749,"longitude":-122.4194}},"endLocation":{"latLng":{"latitude":37.8044,"longitude":-122.4108}}}]}]}`))
 	}))
-	defer server.Close()
 
 	client := NewClientWithHTTP("test-key", server.Client(), server.URL)
 	req := &routingpb.ComputeRoutesRequest{
@@ -69,11 +68,10 @@ func TestComputeRoutesCallsRoutesAPI(t *testing.T) {
 }
 
 func TestComputeRoutesReturnsAPIStatusError(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 		_, _ = w.Write([]byte(`{"error":{"message":"bad key"}}`))
 	}))
-	defer server.Close()
 
 	client := NewClientWithHTTP("test-key", server.Client(), server.URL)
 	_, err := client.ComputeRoutes(context.Background(), &routingpb.ComputeRoutesRequest{
@@ -86,7 +84,7 @@ func TestComputeRoutesReturnsAPIStatusError(t *testing.T) {
 
 func TestRoutesFieldMask(t *testing.T) {
 	full := RoutesFieldMask(true, true)
-	for _, want := range []string{"tollInfo", "speedReadingIntervals", "encodedPolyline"} {
+	for _, want := range []string{"tollInfo", "speedReadingIntervals", "encodedPolyline", "navigationInstruction"} {
 		if !strings.Contains(full, want) {
 			t.Errorf("full mask missing %q: %s", want, full)
 		}

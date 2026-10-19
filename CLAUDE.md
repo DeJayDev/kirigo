@@ -18,9 +18,9 @@ A monorepo of small Go CLI binaries. Each binary lives under `cmd/<name>` and is
 
 - `cmd/<name>/main.go` — flag parsing, exit codes, and error rendering only. All machine-readable output (results and errors, including startup errors) goes through `internal/output`. Exit codes: `2` config/validation error, `1` runtime/API error, `0` ok.
 - `internal/commute`, `internal/gcal` — pure domain logic behind an injected client interface and clock (`now func() time.Time`), so they test without HTTP. In commute, `Config.Normalized()` is the single validation gate, called in `main` and defensively inside `Lookup`. These packages own the public result shape.
-- `internal/googlemaps` — thin transport for the Google Routes REST endpoint (`v2:computeRoutes`, `TRAFFIC_AWARE`): marshals the official `routingpb` types with `protojson`, `RoutesFieldMask` builds the `X-Goog-FieldMask`, `NewClientWithHTTP` injects a test server.
+- `internal/googlemaps` — thin transport for the Google Routes (`v2:computeRoutes`, `TRAFFIC_AWARE`) and Places (`v1/places:searchText`) REST endpoints: marshals the official `routingpb`/`placespb` types with `protojson`, `RoutesFieldMask`/`PlacesFieldMask` build the `X-Goog-FieldMask`, `NewClientWithHTTP` injects a test server.
 - `internal/googlecal` — gcal's Calendar client, built on the official `google.golang.org/api/calendar/v3` discovery client.
-- `internal/configenv` — loads env from the first existing file among `~/.config/kirigo/{.env,env,kirigo.env}`, or `$KIRIGO_ENV_FILE`. Missing files are not errors.
+- `internal/configenv` — loads env from the first existing file among `~/.config/kirigo/{.env,env,kirigo.env}`, or `$KIRIGO_ENV_FILE`, and applies `TZ` from it; `LoadPlaces` reads `~/.config/kirigo/places.json`. Missing files are not errors.
 - `internal/output` — the output writer: JSON (default, raw 2-space) or TOON (`-format toon`, `KIRIGO_FORMAT`, or agent-context autodetect, via `toon-go`). Route all machine-readable output through `output`.
 
 ### Conventions

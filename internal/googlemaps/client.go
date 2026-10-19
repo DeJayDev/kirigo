@@ -1,6 +1,6 @@
-// Package googlemaps is a thin transport over the Google Routes REST endpoint.
-// Requests and responses use the official routingpb types (proto3 JSON via
-// protojson), so the API contract is generated, not hand-maintained.
+// Package googlemaps is a thin transport over the Google Routes and Places REST
+// endpoints. Requests and responses use the official routingpb/placespb types
+// (proto3 JSON via protojson), so the API contract is generated, not hand-maintained.
 package googlemaps
 
 import (
@@ -12,43 +12,64 @@ import (
 	"net/http"
 	"strconv"
 
+	placespb "cloud.google.com/go/maps/places/apiv1/placespb"
 	routingpb "cloud.google.com/go/maps/routing/apiv2/routingpb"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
-const routesEndpoint = "https://routes.googleapis.com/directions/v2:computeRoutes"
+const (
+	routesEndpoint = "https://routes.googleapis.com/directions/v2:computeRoutes"
+	placesEndpoint = "https://places.googleapis.com/v1/places:searchText"
+)
 
 type Client struct {
-	apiKey     string
-	httpClient *http.Client
-	endpoint   string
+	apiKey         string
+	httpClient     *http.Client
+	routesEndpoint string
+	placesEndpoint string
 }
 
 func NewClient(apiKey string) *Client {
-	return &Client{apiKey: apiKey, httpClient: http.DefaultClient, endpoint: routesEndpoint}
+	return &Client{apiKey: apiKey, httpClient: http.DefaultClient, routesEndpoint: routesEndpoint, placesEndpoint: placesEndpoint}
 }
 
+// NewClientWithHTTP points every API call at endpoint (a test server).
 func NewClientWithHTTP(apiKey string, httpClient *http.Client, endpoint string) *Client {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
-	if endpoint == "" {
-		endpoint = routesEndpoint
-	}
-	return &Client{apiKey: apiKey, httpClient: httpClient, endpoint: endpoint}
+	return &Client{apiKey: apiKey, httpClient: httpClient, routesEndpoint: endpoint, placesEndpoint: endpoint}
 }
 
 // ComputeRoutes POSTs req to the Routes REST endpoint and decodes the response.
 // fieldMask is the X-Goog-FieldMask selecting which response fields to return.
 func (c *Client) ComputeRoutes(ctx context.Context, req *routingpb.ComputeRoutesRequest, fieldMask string) (*routingpb.ComputeRoutesResponse, error) {
+	var out routingpb.ComputeRoutesResponse
+	if err := c.post(ctx, "Routes API", c.routesEndpoint, fieldMask, req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// SearchText POSTs req to the Places (New) Text Search endpoint.
+func (c *Client) SearchText(ctx context.Context, req *placespb.SearchTextRequest, fieldMask string) (*placespb.SearchTextResponse, error) {
+	var out placespb.SearchTextResponse
+	if err := c.post(ctx, "Places API", c.placesEndpoint, fieldMask, req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) post(ctx context.Context, api, endpoint, fieldMask string, req, out proto.Message) error {
 	body, err := protojson.Marshal(req)
 	if err != nil {
-		return nil, fmt.Errorf("encode Routes API request: %w", err)
+		return fmt.Errorf("encode %s request: %w", api, err)
 	}
 
-	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("create Routes API request: %w", err)
+		return fmt.Errorf("create %s request: %w", api, err)
 	}
 	httpRequest.Header.Set("Content-Type", "application/json")
 	httpRequest.Header.Set("X-Goog-Api-Key", c.apiKey)
@@ -56,42 +77,44 @@ func (c *Client) ComputeRoutes(ctx context.Context, req *routingpb.ComputeRoutes
 
 	response, err := c.httpClient.Do(httpRequest)
 	if err != nil {
-		return nil, fmt.Errorf("call Routes API: %w", err)
+		return fmt.Errorf("call %s: %w", api, err)
 	}
 	defer response.Body.Close()
 
 	payload, err := io.ReadAll(response.Body)
 	if err != nil {
-		return nil, fmt.Errorf("read Routes API response: %w", err)
+		return fmt.Errorf("read %s response: %w", api, err)
 	}
 	if response.StatusCode < 200 || response.StatusCode > 299 {
 		if msg := apiErrorMessage(payload); msg != "" {
-			return nil, fmt.Errorf("unexpected HTTP %s from Routes API: %s", response.Status, msg)
+			return fmt.Errorf("unexpected HTTP %s from %s: %s", response.Status, api, msg)
 		}
-		return nil, fmt.Errorf("unexpected HTTP %s from Routes API", response.Status)
+		return fmt.Errorf("unexpected HTTP %s from %s", response.Status, api)
 	}
 
-	var out routingpb.ComputeRoutesResponse
-	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(payload, &out); err != nil {
-		return nil, fmt.Errorf("decode Routes API response: %w", err)
+	if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(payload, out); err != nil {
+		return fmt.Errorf("decode %s response: %w", api, err)
 	}
-	return &out, nil
+	return nil
 }
 
 // RoutesFieldMask builds the response field mask. Toll and traffic-segment fields
 // are only meaningful for driving, so callers pass false for other modes.
 func RoutesFieldMask(tolls, segments bool) string {
-	mask := "routes.description,routes.duration,routes.staticDuration,routes.distanceMeters," +
+	mask := "geocodingResults,routes.description,routes.duration,routes.staticDuration,routes.distanceMeters," +
 		"routes.legs.duration,routes.legs.staticDuration,routes.legs.distanceMeters," +
 		"routes.legs.startLocation,routes.legs.endLocation"
 	if tolls {
 		mask += ",routes.travelAdvisory.tollInfo"
 	}
 	if segments {
-		mask += ",routes.polyline.encodedPolyline,routes.travelAdvisory.speedReadingIntervals,routes.legs.travelAdvisory.speedReadingIntervals"
+		mask += ",routes.polyline.encodedPolyline,routes.travelAdvisory.speedReadingIntervals,routes.legs.travelAdvisory.speedReadingIntervals," +
+			"routes.legs.steps.navigationInstruction.instructions"
 	}
 	return mask
 }
+
+const PlacesFieldMask = "places.id,places.displayName,places.formattedAddress,places.location"
 
 // apiErrorMessage pulls the human message out of Google's {"error":{...}} envelope.
 func apiErrorMessage(payload []byte) string {

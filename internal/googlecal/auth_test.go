@@ -3,6 +3,7 @@ package googlecal
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -229,5 +230,35 @@ func TestSaveTokenPreservesRefreshToken(t *testing.T) {
 	}
 	if saved.AccessToken != "new" || saved.RefreshToken != "keep-me" {
 		t.Fatalf("saved = %+v, want access=new refresh=keep-me", saved)
+	}
+}
+
+func TestTokenSourceReportsRevokedRefreshToken(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid_grant","error_description":"Token has been expired or revoked."}`))
+	}))
+	defer server.Close()
+
+	path := filepath.Join(t.TempDir(), "token.json")
+	if err := saveToken(path, &oauth2.Token{
+		AccessToken:  "expired-access",
+		RefreshToken: "dead-refresh",
+		Expiry:       time.Now().Add(-time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &oauth2.Config{ClientID: "client-id", ClientSecret: "client-secret", Endpoint: oauth2.Endpoint{TokenURL: server.URL}}
+	source, err := TokenSource(context.Background(), cfg, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = source.Token()
+	if err == nil || !strings.Contains(err.Error(), "Token has been expired or revoked.") || !strings.Contains(err.Error(), "gcal setup") {
+		t.Fatalf("Token() error = %v, want revoked-token guidance", err)
+	}
+	if _, ok := errors.AsType[*oauth2.RetrieveError](err); ok {
+		t.Fatal("error still unwraps to *oauth2.RetrieveError; oauth2adapt would replace the guidance with the raw response")
 	}
 }

@@ -73,6 +73,9 @@ type persistingSource struct {
 
 func (p *persistingSource) Token() (*oauth2.Token, error) {
 	tok, err := p.base.Token()
+	if rerr, ok := errors.AsType[*oauth2.RetrieveError](err); ok && rerr.ErrorCode == "invalid_grant" {
+		return nil, fmt.Errorf("Google rejected the stored refresh token (%s). While the OAuth consent screen is in Testing, Google expires refresh tokens 7 days after consent: publish the app, then re-run: gcal setup", rerr.ErrorDescription)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("refresh access token: %w", err)
 	}

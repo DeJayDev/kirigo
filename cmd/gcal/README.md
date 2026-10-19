@@ -4,7 +4,7 @@ Full Google Calendar event CRUD for agents: JSON in, JSON out, and every mutatio
 
 ## Setup
 
-Create a **Desktop** OAuth client in Google Cloud Console (any project with the Calendar API enabled), then put its credentials in kirigo's env:
+Create a **Desktop** OAuth client in Google Cloud Console (any project with the Calendar API enabled) and **publish** its OAuth consent screen (or set the audience to Internal): while it stays in Testing, Google expires every refresh token 7 days after consent and `gcal` dies with `invalid_grant`. Then put the client's credentials in kirigo's env:
 
 ```bash
 printf 'GOOGLE_OAUTH_CLIENT_ID=...\nGOOGLE_OAUTH_CLIENT_SECRET=...\n' >> ~/.config/kirigo/.env

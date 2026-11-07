@@ -55,7 +55,7 @@ func TestComputeRoutesCallsRoutesAPI(t *testing.T) {
 		RoutingPreference:        routingpb.RoutingPreference_TRAFFIC_AWARE,
 		ComputeAlternativeRoutes: true,
 	}
-	resp, err := client.ComputeRoutes(context.Background(), req, RoutesFieldMask(false, false))
+	resp, err := client.ComputeRoutes(context.Background(), req, RoutesFieldMask(false, false, false))
 	if err != nil {
 		t.Fatalf("ComputeRoutes returned error: %v", err)
 	}
@@ -76,20 +76,20 @@ func TestComputeRoutesReturnsAPIStatusError(t *testing.T) {
 	client := NewClientWithHTTP("test-key", server.Client(), server.URL)
 	_, err := client.ComputeRoutes(context.Background(), &routingpb.ComputeRoutesRequest{
 		Origin: addr("a"), Destination: addr("b"), TravelMode: routingpb.RouteTravelMode_DRIVE,
-	}, RoutesFieldMask(false, false))
+	}, RoutesFieldMask(false, false, false))
 	if err == nil || !strings.Contains(err.Error(), "bad key") {
 		t.Fatalf("want error carrying API message, got %v", err)
 	}
 }
 
 func TestRoutesFieldMask(t *testing.T) {
-	full := RoutesFieldMask(true, true)
-	for _, want := range []string{"tollInfo", "speedReadingIntervals", "encodedPolyline", "navigationInstruction"} {
+	full := RoutesFieldMask(true, true, true)
+	for _, want := range []string{"tollInfo", "speedReadingIntervals", "encodedPolyline", "navigationInstruction", "transitDetails"} {
 		if !strings.Contains(full, want) {
 			t.Errorf("full mask missing %q: %s", want, full)
 		}
 	}
-	if strings.Contains(RoutesFieldMask(false, false), "tollInfo") {
+	if strings.Contains(RoutesFieldMask(false, false, false), "tollInfo") {
 		t.Error("base mask should not include tollInfo")
 	}
 }

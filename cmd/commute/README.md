@@ -57,6 +57,8 @@ commute --origin "123 Main St, SF" --destination "1 Ferry Building, SF" --segmen
 
 Clock times (`18:00`, `3:04pm`) are in the process's local zone. Set `TZ` (e.g. `TZ=America/Los_Angeles`) in the env file on UTC hosts; RFC3339 times carry their own offset.
 
+Transit routes carry `steps`: one merged `walk` between rides, and each ride's `line`, `vehicle`, `headsign`, boarding stop and time (`from`, `departs`), alighting stop and time (`to`, `arrives`), and `stops`. `depart_at` and `arrive_at` come from that timetable — first boarding minus the walk to it, last arrival plus the walk from it — so an arrive-by trip that gets in early shows when it actually leaves and lands.
+
 `--arrival` is native for transit; for driving it iterates `departureTime` against traffic until `depart_at + duration` lands on your arrival (a few API calls). All-scalar knobs are additive — the plain two-arg call still returns the original shape plus `mode`.
 
 Environment is loaded from the first existing file at `~/.config/kirigo/.env`, `~/.config/kirigo/env`, or `~/.config/kirigo/kirigo.env`. Set `KIRIGO_ENV_FILE` to point at a different file.

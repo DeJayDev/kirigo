@@ -2,6 +2,7 @@ package commute
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	localized "google.golang.org/genproto/googleapis/type/localized_text"
 	"google.golang.org/genproto/googleapis/type/money"
 	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type fakeRoutesClient struct {
@@ -122,6 +124,78 @@ func TestArriveByDrivingSolvesDeparture(t *testing.T) {
 	}
 	if last := client.requests[len(client.requests)-1]; last.GetDepartureTime() == nil {
 		t.Fatal("final request should carry a departureTime")
+	}
+}
+
+func TestTransitTimesFromSchedule(t *testing.T) {
+	utc := func(h, m int) time.Time { return time.Date(2026, 11, 9, h, m, 0, 0, time.UTC) }
+	walk := func(n int) *routingpb.RouteLegStep {
+		return &routingpb.RouteLegStep{TravelMode: routingpb.RouteTravelMode_WALK, StaticDuration: dur(n)}
+	}
+	ride := func(line *routingpb.TransitLine, from string, dep time.Time, to string, arr time.Time) *routingpb.RouteLegStep {
+		return &routingpb.RouteLegStep{
+			TravelMode:     routingpb.RouteTravelMode_TRANSIT,
+			StaticDuration: dur(int(arr.Sub(dep).Seconds())),
+			TransitDetails: &routingpb.RouteLegStepTransitDetails{
+				Headsign:    "Ocean Beach",
+				TransitLine: line,
+				StopCount:   6,
+				StopDetails: &routingpb.RouteLegStepTransitDetails_TransitStopDetails{
+					DepartureStop: &routingpb.TransitStop{Name: from},
+					DepartureTime: timestamppb.New(dep),
+					ArrivalStop:   &routingpb.TransitStop{Name: to},
+					ArrivalTime:   timestamppb.New(arr),
+				},
+			},
+		}
+	}
+	tram := &routingpb.TransitLine{NameShort: "N", Name: "Judah", Vehicle: &routingpb.TransitVehicle{Type: routingpb.TransitVehicle_TRAM}}
+	bus := &routingpb.TransitLine{Name: "Haight-Noriega", Vehicle: &routingpb.TransitVehicle{Type: routingpb.TransitVehicle_BUS}}
+	client := &fakeRoutesClient{response: resp(&routingpb.Route{
+		Duration: dur(2480), StaticDuration: dur(2480),
+		Legs: []*routingpb.RouteLeg{{
+			StartLocation: loc(37.79, -122.39), EndLocation: loc(37.77, -122.46),
+			Steps: []*routingpb.RouteLegStep{
+				walk(120), walk(240),
+				ride(tram, "Embarcadero", utc(16, 23), "Church & Duboce", utc(16, 33)),
+				walk(60),
+				ride(bus, "Haight & Fillmore", utc(16, 40), "Stanyan", utc(16, 50)),
+				walk(300), walk(200),
+			},
+		}},
+	})}
+	now := time.Date(2026, 11, 7, 10, 0, 0, 0, time.FixedZone("PST", -8*60*60))
+
+	result, err := Lookup(context.Background(), client, Config{
+		Origin: "a", Destination: "b", Mode: "transit",
+		Arrival: "2026-11-09T09:00:00-08:00", APIKey: "k",
+	}, func() time.Time { return now })
+	if err != nil {
+		t.Fatalf("Lookup: %v", err)
+	}
+	if got := client.requests[0].GetArrivalTime().AsTime(); !got.Equal(utc(17, 0)) {
+		t.Fatalf("arrivalTime = %v, want 17:00Z", got)
+	}
+	if want := utc(16, 17); !result.DepartAt.Equal(want) {
+		t.Errorf("depart_at = %v, want %v", result.DepartAt, want)
+	}
+	if want := utc(16, 50).Add(500 * time.Second); !result.ArriveAt.Equal(want) {
+		t.Errorf("arrive_at = %v, want %v", result.ArriveAt, want)
+	}
+	steps := result.Routes[0].Steps
+	var shape []string
+	for _, s := range steps {
+		shape = append(shape, fmt.Sprintf("%s:%d", s.Mode, s.Duration.Seconds))
+	}
+	if got, want := strings.Join(shape, " "), "walk:360 transit:600 walk:60 transit:600 walk:500"; got != want {
+		t.Fatalf("steps = %q, want %q", got, want)
+	}
+	if s := steps[1]; s.Line != "N" || s.Vehicle != "tram" || s.Headsign != "Ocean Beach" || s.From != "Embarcadero" ||
+		s.Departs.Format(time.Kitchen) != "8:23AM" || s.To != "Church & Duboce" || s.Stops != 6 {
+		t.Errorf("first ride = %#v", s)
+	}
+	if steps[3].Line != "Haight-Noriega" {
+		t.Errorf("second ride line = %q, want Haight-Noriega", steps[3].Line)
 	}
 }
 

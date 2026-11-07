@@ -1,6 +1,7 @@
 package commute
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -66,6 +67,7 @@ type Route struct {
 	Distance       TextDistance `json:"distance"`
 	Description    string       `json:"description,omitempty"`
 	Legs           []Leg        `json:"legs,omitempty"`
+	Steps          []Step       `json:"steps,omitempty"`
 	Toll           *Toll        `json:"toll,omitempty"`
 	Segments       []Segment    `json:"segments,omitempty"`
 	Streets        []string     `json:"streets,omitempty"`
@@ -79,6 +81,19 @@ type Leg struct {
 	Start          Place        `json:"start"`
 	End            Place        `json:"end"`
 	Segments       []Segment    `json:"segments,omitempty"`
+}
+
+type Step struct {
+	Mode     string      `json:"mode"`
+	Duration TextSeconds `json:"duration"`
+	Line     string      `json:"line,omitempty"`
+	Vehicle  string      `json:"vehicle,omitempty"`
+	Headsign string      `json:"headsign,omitempty"`
+	From     string      `json:"from,omitempty"`
+	Departs  time.Time   `json:"departs,omitzero"`
+	To       string      `json:"to,omitempty"`
+	Arrives  time.Time   `json:"arrives,omitzero"`
+	Stops    int         `json:"stops,omitempty"`
 }
 
 type Toll struct {
@@ -161,7 +176,7 @@ func Lookup(ctx context.Context, client routesClient, cfg Config, now func() tim
 
 	mode := modeEnum[cfg.Mode]
 	driving := mode == routingpb.RouteTravelMode_DRIVE
-	mask := googlemaps.RoutesFieldMask(cfg.Tolls && driving, cfg.Segments && driving)
+	mask := googlemaps.RoutesFieldMask(cfg.Tolls && driving, cfg.Segments && driving, mode == routingpb.RouteTravelMode_TRANSIT)
 
 	var response *routingpb.ComputeRoutesResponse
 	var departAt time.Time
@@ -205,7 +220,7 @@ func Lookup(ctx context.Context, client routesClient, cfg Config, now func() tim
 	routes := make([]Route, 0, len(response.GetRoutes()))
 	var origin, destination Place
 	for i, r := range response.GetRoutes() {
-		converted, o, d, err := convertRoute(r, cfg, points)
+		converted, o, d, err := convertRoute(r, cfg, points, nowT.Location())
 		if err != nil {
 			return Result{}, err
 		}
@@ -226,7 +241,10 @@ func Lookup(ctx context.Context, client routesClient, cfg Config, now func() tim
 	}
 
 	primary := time.Duration(routes[0].Duration.Seconds) * time.Second
+	scheduledDepart, scheduledArrive, scheduled := scheduledTimes(routes[0].Steps)
 	switch {
+	case scheduled:
+		result.DepartAt, result.ArriveAt = &scheduledDepart, &scheduledArrive
 	case mode == routingpb.RouteTravelMode_TRANSIT && !arrival.IsZero():
 		dep := arrival.Add(-primary)
 		result.DepartAt, result.ArriveAt = &dep, &arrival
@@ -272,7 +290,7 @@ func waypoint(value string) *routingpb.Waypoint {
 func solveDeparture(ctx context.Context, client routesClient, cfg Config, mode routingpb.RouteTravelMode, arrival, now time.Time) (time.Time, error) {
 	lite := cfg
 	lite.Alternatives, lite.Tolls, lite.Segments = false, false, false
-	mask := googlemaps.RoutesFieldMask(false, false)
+	mask := googlemaps.RoutesFieldMask(false, false, false)
 	driving := mode == routingpb.RouteTravelMode_DRIVE
 
 	// No departureTime on the probe: it means "now" server-side. A now timestamp
@@ -344,7 +362,7 @@ func routeSeconds(r *routingpb.Route) int {
 	return int(r.GetDuration().GetSeconds())
 }
 
-func convertRoute(r *routingpb.Route, cfg Config, points []string) (Route, Place, Place, error) {
+func convertRoute(r *routingpb.Route, cfg Config, points []string, loc *time.Location) (Route, Place, Place, error) {
 	if len(r.GetLegs()) == 0 {
 		return Route{}, Place{}, Place{}, errors.New("route from the Routes API has no legs")
 	}
@@ -370,6 +388,9 @@ func convertRoute(r *routingpb.Route, cfg Config, points []string) (Route, Place
 		out.Streets = toStreets(r.GetLegs())
 		out.Polyline = r.GetPolyline().GetEncodedPolyline()
 	}
+	if cfg.Mode == "transit" {
+		out.Steps = toSteps(r.GetLegs(), loc)
+	}
 
 	first := r.GetLegs()[0]
 	last := r.GetLegs()[len(r.GetLegs())-1]
@@ -389,6 +410,65 @@ func toLeg(leg *routingpb.RouteLeg, startAddr, endAddr string) Leg {
 		End:            place(endAddr, leg.GetEndLocation()),
 		Segments:       toSegments(leg.GetTravelAdvisory().GetSpeedReadingIntervals()),
 	}
+}
+
+func toSteps(legs []*routingpb.RouteLeg, loc *time.Location) []Step {
+	var steps []Step
+	for _, leg := range legs {
+		for _, s := range leg.GetSteps() {
+			mode := strings.ToLower(s.GetTravelMode().String())
+			seconds := int(s.GetStaticDuration().GetSeconds())
+			if s.GetTravelMode() != routingpb.RouteTravelMode_TRANSIT {
+				if n := len(steps); n > 0 && steps[n-1].Mode == mode {
+					steps[n-1].Duration = secs(steps[n-1].Duration.Seconds + seconds)
+					continue
+				}
+				steps = append(steps, Step{Mode: mode, Duration: secs(seconds)})
+				continue
+			}
+			td := s.GetTransitDetails()
+			line := td.GetTransitLine()
+			stops := td.GetStopDetails()
+			steps = append(steps, Step{
+				Mode:     mode,
+				Duration: secs(seconds),
+				Line:     cmp.Or(line.GetNameShort(), line.GetName()),
+				Vehicle:  strings.ToLower(line.GetVehicle().GetType().String()),
+				Headsign: td.GetHeadsign(),
+				From:     stops.GetDepartureStop().GetName(),
+				Departs:  stops.GetDepartureTime().AsTime().In(loc),
+				To:       stops.GetArrivalStop().GetName(),
+				Arrives:  stops.GetArrivalTime().AsTime().In(loc),
+				Stops:    int(td.GetStopCount()),
+			})
+		}
+	}
+	return steps
+}
+
+func scheduledTimes(steps []Step) (depart, arrive time.Time, ok bool) {
+	first, last := -1, -1
+	for i, s := range steps {
+		if s.Mode != "transit" {
+			continue
+		}
+		if first < 0 {
+			first = i
+		}
+		last = i
+	}
+	if first < 0 {
+		return time.Time{}, time.Time{}, false
+	}
+	depart = steps[first].Departs
+	for _, s := range steps[:first] {
+		depart = depart.Add(-time.Duration(s.Duration.Seconds) * time.Second)
+	}
+	arrive = steps[last].Arrives
+	for _, s := range steps[last+1:] {
+		arrive = arrive.Add(time.Duration(s.Duration.Seconds) * time.Second)
+	}
+	return depart, arrive, true
 }
 
 func toToll(ti *routingpb.TollInfo) *Toll {

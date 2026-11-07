@@ -99,8 +99,9 @@ func (c *Client) post(ctx context.Context, api, endpoint, fieldMask string, req,
 }
 
 // RoutesFieldMask builds the response field mask. Toll and traffic-segment fields
-// are only meaningful for driving, so callers pass false for other modes.
-func RoutesFieldMask(tolls, segments bool) string {
+// are only meaningful for driving, and transit step details only for transit, so
+// callers pass false for other modes.
+func RoutesFieldMask(tolls, segments, transit bool) string {
 	mask := "geocodingResults,routes.description,routes.duration,routes.staticDuration,routes.distanceMeters," +
 		"routes.legs.duration,routes.legs.staticDuration,routes.legs.distanceMeters," +
 		"routes.legs.startLocation,routes.legs.endLocation"
@@ -110,6 +111,9 @@ func RoutesFieldMask(tolls, segments bool) string {
 	if segments {
 		mask += ",routes.polyline.encodedPolyline,routes.travelAdvisory.speedReadingIntervals,routes.legs.travelAdvisory.speedReadingIntervals," +
 			"routes.legs.steps.navigationInstruction.instructions"
+	}
+	if transit {
+		mask += ",routes.legs.steps.travelMode,routes.legs.steps.staticDuration,routes.legs.steps.transitDetails"
 	}
 	return mask
 }
